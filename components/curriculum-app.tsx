@@ -364,6 +364,94 @@ export function CurriculumApp({
       />
     </div>
   );
+  return (
+    <>
+      {/* existing rendered board is already returned above; keep for layout consistency */}
+      {/* The board markup was returned above; render AddUnitDialog alongside via portal-like placement */}
+      <AddUnitDialog
+        open={Boolean(addSlot)}
+        onClose={() => setAddSlot(null)}
+        search={addSearch}
+        setSearch={setAddSearch}
+        units={data.units}
+        onAdd={async (id: string) => {
+          await addUnitToSlot(id);
+        }}
+        onCreate={async () => {
+          await createAndAddNewUnit();
+        }}
+      />
+    </>
+  );
+}
+
+
+// Add unit dialog for ClassBoard
+// Rendered inside ClassBoard via addSlot state
+function AddUnitDialog({
+  open,
+  onClose,
+  search,
+  setSearch,
+  units,
+  onAdd,
+  onCreate
+}: {
+  open: boolean;
+  onClose: () => void;
+  search: string;
+  setSearch: (s: string) => void;
+  units: SnapshotUnit[];
+  onAdd: (unitId: string) => Promise<void>;
+  onCreate: () => Promise<void>;
+}) {
+  const matches = units.filter((u) => {
+    const text = [u.title, u.subjectName, u.yearGroupName, ...u.tags.map((t) => t.value)].join(" ").toLowerCase();
+    return text.includes(search.toLowerCase());
+  });
+  return (
+    <Dialog
+      open={open}
+      title="Add unit to slot"
+      description="Search the library or create a new unit to add to this slot"
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={onCreate}>Create & add new unit</Button>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search units..." />
+        <div className="max-h-64 overflow-auto">
+          {matches.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No matching units</p>
+          ) : (
+            <div className="space-y-2">
+              {matches.map((u) => (
+                <div key={u.id} className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="font-medium">{u.title}</p>
+                    <p className="text-sm text-muted-foreground">{u.subjectName} — {u.yearGroupName}</p>
+                  </div>
+                  <div>
+                    <Button size="sm" onClick={() => onAdd(u.id)}>
+                      Add
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </Dialog>
+  );
 }
 
 function DashboardView({ data }: { data: CurriculumSnapshot }) {
@@ -908,6 +996,24 @@ function CurriculumMapView({
   setStatus: (status: string | null) => void;
   onEditUnit: (unit: SnapshotUnit) => void;
 }) {
+  React.useEffect(() => {
+    const handler = () => {
+      (async () => {
+        try {
+          setStatus("Refreshing map...");
+          const snapshot = await jsonFetch<CurriculumSnapshot>("/api/bootstrap");
+          setData(snapshot);
+        } catch (err) {
+          // noop
+        } finally {
+          setStatus(null);
+        }
+      })();
+    };
+    window.addEventListener("curriculum:refresh", handler as EventListener);
+    return () => window.removeEventListener("curriculum:refresh", handler as EventListener);
+  }, [setData, setStatus]);
+
   const [mode, setMode] = React.useState<
     "whole" | "class" | "year" | "subject" | "cycle-a" | "cycle-b" | "science" | "previous" | "warnings"
   >("class");
@@ -1046,9 +1152,60 @@ function ClassBoard({
   classGroup: SnapshotClassGroup;
   onEditUnit: (unit: SnapshotUnit) => void;
 }) {
+  const [addSlot, setAddSlot] = React.useState<{ classGroupId: string; termSlotId: string } | null>(null);
+  const [addSearch, setAddSearch] = React.useState("");
+
+  async function addUnitToSlot(unitId: string) {
+    if (!addSlot) return;
+    const { classGroupId, termSlotId } = addSlot;
+    await jsonFetch("/api/planned-units", {
+      method: "POST",
+      body: JSON.stringify({
+        unitId,
+        classGroupId,
+        termSlotId,
+        subjectId: data.units.find((u) => u.id === unitId)?.subjectId ?? data.subjects[0]?.id,
+        mode: "SHARED",
+        assignedYearGroupIds:
+          data.classes.find((c) => c.id === classGroupId)?.yearGroups.map((y) => y.id) ?? [],
+        position:
+          data.plannedUnits.filter((planned) => planned.classGroupId === classGroupId && planned.termSlotId === termSlotId).length,
+        notes: null
+      })
+    });
+    const snapshot = await jsonFetch<CurriculumSnapshot>("/api/bootstrap");
+    // update parent data via event - mutate local for immediacy
+    // (CurriculumMapView will re-render when parent data updates because snapshot is fetched there)
+    // but here we just close the dialog and rely on parent to refresh when needed
+    setAddSlot(null);
+    // update global snapshot by navigating parent refresh: use window.location hack to trigger reload? Instead, call an event.
+    // Simpler: request parent to refresh by dispatching a custom event that CurriculumMapView listens to.
+    window.dispatchEvent(new CustomEvent("curriculum:refresh"));
+  }
+
+  async function createAndAddNewUnit() {
+    if (!addSlot) return;
+    const subjectId = data.subjects[0]?.id;
+    if (!subjectId) return;
+    const unit = await jsonFetch<SnapshotUnit>("/api/units", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "New editable unit",
+        subjectId,
+        unitType: "unit",
+        vocabulary: [],
+        statutoryObjectiveLinks: [],
+        repetitionAllowed: false,
+        tags: []
+      })
+    });
+    await addUnitToSlot(unit.id);
+  }
+
   return (
-    <div className="overflow-x-auto scrollbar-thin">
-      <div className="min-w-[1100px]">
+    <>
+      <div className="overflow-x-auto scrollbar-thin">
+        <div className="min-w-[1100px]">
         <div className="grid grid-cols-[160px_repeat(6,minmax(145px,1fr))] border-b text-sm font-medium text-muted-foreground">
           <div className="p-2">Subject</div>
           {data.terms.map((term) => (
@@ -1084,13 +1241,28 @@ function ClassBoard({
                   termSlotId={term.id}
                   plannedUnits={planned}
                   onEditUnit={onEditUnit}
+                  onOpenAddSlot={(slot) => setAddSlot(slot)}
                 />
               );
             })}
           </div>
         ))}
+        </div>
       </div>
-    </div>
+      <AddUnitDialog
+        open={Boolean(addSlot)}
+        onClose={() => setAddSlot(null)}
+        search={addSearch}
+        setSearch={setAddSearch}
+        units={data.units}
+        onAdd={async (id: string) => {
+          await addUnitToSlot(id);
+        }}
+        onCreate={async () => {
+          await createAndAddNewUnit();
+        }}
+      />
+    </>
   );
 }
 
@@ -1100,12 +1272,15 @@ function BoardCell({
   termSlotId,
   plannedUnits,
   onEditUnit
+  ,
+  onOpenAddSlot
 }: {
   data: CurriculumSnapshot;
   classGroupId: string;
   termSlotId: string;
   plannedUnits: SnapshotPlannedUnit[];
   onEditUnit: (unit: SnapshotUnit) => void;
+  onOpenAddSlot: (slot: { classGroupId: string; termSlotId: string }) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: `${classGroupId}:${termSlotId}`,
@@ -1120,19 +1295,27 @@ function BoardCell({
       )}
     >
       <div className="space-y-2">
-        {plannedUnits.map((planned) => {
-          const unit = data.units.find((item) => item.id === planned.unitId);
-          if (!unit) return null;
-          return (
-            <DraggableUnitCard
-              key={planned.id}
-              data={data}
-              planned={planned}
-              unit={unit}
-              onEditUnit={onEditUnit}
-            />
-          );
-        })}
+        {plannedUnits.length === 0 ? (
+          <div className="flex items-center justify-center">
+            <Button size="sm" onClick={() => onOpenAddSlot({ classGroupId, termSlotId })}>
+              + Add unit
+            </Button>
+          </div>
+        ) : (
+          plannedUnits.map((planned) => {
+            const unit = data.units.find((item) => item.id === planned.unitId);
+            if (!unit) return null;
+            return (
+              <DraggableUnitCard
+                key={planned.id}
+                data={data}
+                planned={planned}
+                unit={unit}
+                onEditUnit={onEditUnit}
+              />
+            );
+          })
+        )}
       </div>
     </div>
   );
