@@ -996,6 +996,8 @@ function CurriculumMapView({
     "whole" | "class" | "year" | "subject" | "cycle-a" | "cycle-b" | "science" | "previous" | "warnings"
   >("class");
   const [classId, setClassId] = React.useState(data.classes[0]?.id ?? "");
+  const [uploadingMap, setUploadingMap] = React.useState(false);
+  const [mapImportMessage, setMapImportMessage] = React.useState<string | null>(null);
   const [yearGroupId, setYearGroupId] = React.useState(data.yearGroups[2]?.id ?? data.yearGroups[0]?.id ?? "");
   const [subjectId, setSubjectId] = React.useState(data.subjects[0]?.id ?? "");
 
@@ -1035,9 +1037,34 @@ function CurriculumMapView({
   const selectedYearGroup =
     data.yearGroups.find((yearGroup) => yearGroup.id === yearGroupId) ?? data.yearGroups[0];
 
+  async function importMapFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploadingMap(true);
+    setMapImportMessage(null);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const response = await fetch("/api/map/import", { method: "POST", body: formData });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Import failed");
+      const snapshot = await jsonFetch<CurriculumSnapshot>("/api/bootstrap");
+      setData(snapshot);
+      setMapImportMessage(`Restored ${result.imported} planned placement${result.imported === 1 ? "" : "s"}`);
+      setStatus("Curriculum map restored");
+    } catch (error) {
+      setMapImportMessage(error instanceof Error ? error.message : "Import failed");
+      setStatus("Map import failed");
+    } finally {
+      setUploadingMap(false);
+      event.target.value = "";
+    }
+  }
+
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
         {[
           ["whole", "Whole school"],
           ["class", "Class"],
@@ -1057,7 +1084,35 @@ function CurriculumMapView({
             {label}
           </Button>
         ))}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <label className="inline-flex cursor-pointer items-center rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">
+            <Upload className="mr-2 h-4 w-4" />
+            {uploadingMap ? "Uploading..." : "Import saved map"}
+            <input type="file" accept="application/json" className="hidden" onChange={importMapFile} />
+          </label>
+          <Button
+            variant="outline"
+            onClick={() => {
+              const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+              const link = document.createElement("a");
+              link.href = URL.createObjectURL(blob);
+              link.download = "curriculum-map.json";
+              link.click();
+              URL.revokeObjectURL(link.href);
+            }}
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Save map JSON
+          </Button>
+        </div>
       </div>
+
+      {mapImportMessage ? (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+          {mapImportMessage}
+        </div>
+      ) : null}
 
       {mode === "class" ? (
         <Card>
@@ -1130,12 +1185,15 @@ function ClassBoard({
   classGroup: SnapshotClassGroup;
   onEditUnit: (unit: SnapshotUnit) => void;
 }) {
-  const [addSlot, setAddSlot] = React.useState<{ classGroupId: string; termSlotId: string } | null>(null);
+  const [addSlot, setAddSlot] = React.useState<{ classGroupId: string; termSlotId: string; plannedId?: string } | null>(null);
   const [addSearch, setAddSearch] = React.useState("");
 
   async function addUnitToSlot(unitId: string) {
     if (!addSlot) return;
-    const { classGroupId, termSlotId } = addSlot;
+    const { classGroupId, termSlotId, plannedId } = addSlot;
+    if (plannedId) {
+      await fetch(`/api/planned-units?id=${plannedId}`, { method: "DELETE" });
+    }
     await jsonFetch("/api/planned-units", {
       method: "POST",
       body: JSON.stringify({
@@ -1258,7 +1316,7 @@ function BoardCell({
   termSlotId: string;
   plannedUnits: SnapshotPlannedUnit[];
   onEditUnit: (unit: SnapshotUnit) => void;
-  onOpenAddSlot: (slot: { classGroupId: string; termSlotId: string }) => void;
+  onOpenAddSlot: (slot: { classGroupId: string; termSlotId: string; plannedId?: string }) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: `${classGroupId}:${termSlotId}`,
@@ -1290,6 +1348,7 @@ function BoardCell({
                 planned={planned}
                 unit={unit}
                 onEditUnit={onEditUnit}
+                onReplace={(plannedItem) => onOpenAddSlot({ classGroupId, termSlotId, plannedId: plannedItem.id })}
               />
             );
           })
@@ -1303,12 +1362,14 @@ function DraggableUnitCard({
   data,
   planned,
   unit,
-  onEditUnit
+  onEditUnit,
+  onReplace
 }: {
   data: CurriculumSnapshot;
   planned: SnapshotPlannedUnit;
   unit: SnapshotUnit;
   onEditUnit: (unit: SnapshotUnit) => void;
+  onReplace: (planned: SnapshotPlannedUnit) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: planned.id,
@@ -1318,6 +1379,16 @@ function DraggableUnitCard({
     transform: CSS.Translate.toString(transform)
   };
   const warnings = warningsForUnit(data, unit.id);
+
+  async function removePlacedUnit() {
+    await fetch(`/api/planned-units?id=${planned.id}`, { method: "DELETE" });
+    window.dispatchEvent(new CustomEvent("curriculum:refresh"));
+  }
+
+  async function replacePlacedUnit() {
+    onReplace(planned);
+  }
+
   return (
     <div
       ref={setNodeRef}
@@ -1349,10 +1420,18 @@ function DraggableUnitCard({
           ))}
         </div>
       </button>
-      <Button className="mt-2 w-full" variant="ghost" size="sm" onClick={() => onEditUnit(unit)}>
-        <FileText className="h-4 w-4" />
-        Edit
-      </Button>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button className="flex-1" variant="ghost" size="sm" onClick={() => onEditUnit(unit)}>
+          <FileText className="h-4 w-4" />
+          Edit
+        </Button>
+        <Button className="flex-1" variant="ghost" size="sm" onClick={replacePlacedUnit}>
+          Replace
+        </Button>
+        <Button className="flex-1" variant="ghost" size="sm" onClick={removePlacedUnit}>
+          Remove
+        </Button>
+      </div>
     </div>
   );
 }
