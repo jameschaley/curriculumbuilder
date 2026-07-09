@@ -364,30 +364,8 @@ export function CurriculumApp({
       />
     </div>
   );
-  return (
-    <>
-      {/* existing rendered board is already returned above; keep for layout consistency */}
-      {/* The board markup was returned above; render AddUnitDialog alongside via portal-like placement */}
-      <AddUnitDialog
-        open={Boolean(addSlot)}
-        onClose={() => setAddSlot(null)}
-        search={addSearch}
-        setSearch={setAddSearch}
-        units={data.units}
-        onAdd={async (id: string) => {
-          await addUnitToSlot(id);
-        }}
-        onCreate={async () => {
-          await createAndAddNewUnit();
-        }}
-      />
-    </>
-  );
 }
 
-
-// Add unit dialog for ClassBoard
-// Rendered inside ClassBoard via addSlot state
 function AddUnitDialog({
   open,
   onClose,
@@ -1987,6 +1965,8 @@ function UnitsLibraryView({
 }) {
   const [search, setSearch] = React.useState("");
   const [subject, setSubject] = React.useState("ALL");
+  const [uploadingLibrary, setUploadingLibrary] = React.useState(false);
+  const [uploadLibraryMessage, setUploadLibraryMessage] = React.useState<string | null>(null);
   const [selectedUnitForPlacement, setSelectedUnitForPlacement] = React.useState<SnapshotUnit | null>(null);
   const [placementClassId, setPlacementClassId] = React.useState(data.classes[0]?.id ?? "");
   const [placementTermId, setPlacementTermId] = React.useState(data.terms[0]?.id ?? "");
@@ -2034,6 +2014,33 @@ function UnitsLibraryView({
     });
     return copy;
   }, [filtered, sortBy, sortDir, data]);
+
+  async function uploadLibraryJson(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploadingLibrary(true);
+    setUploadLibraryMessage(null);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const response = await fetch("/api/library/import", {
+        method: "POST",
+        body: formData
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Import failed");
+      const snapshot = await jsonFetch<CurriculumSnapshot>("/api/bootstrap");
+      setData(snapshot);
+      setUploadLibraryMessage(`Imported ${result.count} unit${result.count === 1 ? "" : "s"} from ${result.fileName}`);
+      setStatus("Library imported");
+    } catch (error) {
+      setUploadLibraryMessage(error instanceof Error ? error.message : "Import failed");
+      setStatus("Library import failed");
+    } finally {
+      setUploadingLibrary(false);
+      event.target.value = "";
+    }
+  }
 
   async function createManualUnit() {
     const subjectId = data.subjects[0]?.id;
@@ -2092,13 +2099,25 @@ function UnitsLibraryView({
               <CardTitle>Units Library</CardTitle>
               <CardDescription>{filtered.length} visible units</CardDescription>
             </div>
-            <Button onClick={createManualUnit}>
-              <FileText className="h-4 w-4" />
-              Add unit
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <label className="inline-flex cursor-pointer items-center rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">
+                <Upload className="mr-2 h-4 w-4" />
+                {uploadingLibrary ? "Uploading..." : "Import JSON library"}
+                <input type="file" accept="application/json" className="hidden" onChange={uploadLibraryJson} />
+              </label>
+              <Button onClick={createManualUnit}>
+                <FileText className="h-4 w-4" />
+                Add unit
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
+          {uploadLibraryMessage ? (
+            <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+              {uploadLibraryMessage}
+            </div>
+          ) : null}
           <div className="mb-4 grid gap-3 md:grid-cols-[1fr_420px]">
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
