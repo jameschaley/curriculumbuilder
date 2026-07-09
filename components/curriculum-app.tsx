@@ -1804,12 +1804,53 @@ function UnitsLibraryView({
 }) {
   const [search, setSearch] = React.useState("");
   const [subject, setSubject] = React.useState("ALL");
+  const [selectedUnitForPlacement, setSelectedUnitForPlacement] = React.useState<SnapshotUnit | null>(null);
+  const [placementClassId, setPlacementClassId] = React.useState(data.classes[0]?.id ?? "");
+  const [placementTermId, setPlacementTermId] = React.useState(data.terms[0]?.id ?? "");
+  const [placementMode, setPlacementMode] = React.useState<PlannedUnitModeKey>("SHARED");
+  const [placementNotes, setPlacementNotes] = React.useState("");
+  const [sortBy, setSortBy] = React.useState<"title" | "subject" | "year" | "cycle" | "tags" | "warnings">("title");
+  const [sortDir, setSortDir] = React.useState<"asc" | "desc">("asc");
   const filtered = data.units.filter((unit) => {
     const text = [unit.title, unit.subjectName, unit.yearGroupName, ...unit.tags.map((tag) => tag.value)]
       .join(" ")
       .toLowerCase();
     return text.includes(search.toLowerCase()) && (subject === "ALL" || unit.subjectId === subject);
   });
+
+  const sorted = React.useMemo(() => {
+    const copy = [...filtered];
+    function fieldValue(unit: SnapshotUnit, key: string) {
+      switch (key) {
+        case "title":
+          return unit.title ?? "";
+        case "subject":
+          return unit.subjectName ?? "";
+        case "year":
+          return unit.yearGroupName ?? "";
+        case "cycle":
+          return unit.cycle ?? "";
+        case "tags":
+          return unit.tags.map((t) => t.value).join(", ") ?? "";
+        default:
+          return "";
+      }
+    }
+
+    copy.sort((a, b) => {
+      const dir = sortDir === "asc" ? 1 : -1;
+      if (sortBy === "warnings") {
+        const wa = warningsForUnit(data, a.id).length;
+        const wb = warningsForUnit(data, b.id).length;
+        return (wa - wb) * dir;
+      }
+      const va = String(fieldValue(a, sortBy)).toLowerCase();
+      const vb = String(fieldValue(b, sortBy)).toLowerCase();
+      if (va === vb) return 0;
+      return (va > vb ? 1 : -1) * dir;
+    });
+    return copy;
+  }, [filtered, sortBy, sortDir, data]);
 
   async function createManualUnit() {
     const subjectId = data.subjects[0]?.id;
@@ -1832,6 +1873,33 @@ function UnitsLibraryView({
     setStatus("Unit created");
   }
 
+  async function addToCurriculum(unit: SnapshotUnit) {
+    if (!placementClassId || !placementTermId) {
+      setStatus("Choose a class and half term first");
+      return;
+    }
+
+    setStatus("Adding unit to curriculum...");
+    await jsonFetch("/api/planned-units", {
+      method: "POST",
+      body: JSON.stringify({
+        unitId: unit.id,
+        classGroupId: placementClassId,
+        termSlotId: placementTermId,
+        subjectId: unit.subjectId,
+        mode: placementMode,
+        assignedYearGroupIds: data.classes.find((classGroup) => classGroup.id === placementClassId)?.yearGroups.map((yearGroup) => yearGroup.id) ?? [],
+        position: data.plannedUnits.filter((planned) => planned.classGroupId === placementClassId && planned.termSlotId === placementTermId).length,
+        notes: placementNotes || null
+      })
+    });
+    const snapshot = await jsonFetch<CurriculumSnapshot>("/api/bootstrap");
+    setData(snapshot);
+    setSelectedUnitForPlacement(null);
+    setPlacementNotes("");
+    setStatus("Unit added to curriculum");
+  }
+
   return (
     <div className="space-y-5">
       <Card>
@@ -1848,7 +1916,7 @@ function UnitsLibraryView({
           </div>
         </CardHeader>
         <CardContent>
-          <div className="mb-4 grid gap-3 md:grid-cols-[1fr_220px]">
+          <div className="mb-4 grid gap-3 md:grid-cols-[1fr_420px]">
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input
@@ -1858,7 +1926,8 @@ function UnitsLibraryView({
                 placeholder="Search units, tags, subjects"
               />
             </div>
-            <Select value={subject} onChange={(event) => setSubject(event.target.value)}>
+            <div className="flex gap-2">
+              <Select value={subject} onChange={(event) => setSubject(event.target.value)}>
               <option value="ALL">All subjects</option>
               {data.subjects.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -1866,6 +1935,19 @@ function UnitsLibraryView({
                 </option>
               ))}
             </Select>
+              <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)}>
+                <option value="title">Sort: Title</option>
+                <option value="subject">Sort: Subject</option>
+                <option value="year">Sort: Year</option>
+                <option value="cycle">Sort: Cycle</option>
+                <option value="tags">Sort: Tags</option>
+                <option value="warnings">Sort: Warnings</option>
+              </Select>
+              <Select value={sortDir} onChange={(e) => setSortDir(e.target.value as any)}>
+                <option value="asc">Asc</option>
+                <option value="desc">Desc</option>
+              </Select>
+            </div>
           </div>
           <div className="overflow-x-auto scrollbar-thin">
             <table className="w-full min-w-[920px] border-collapse text-sm">
@@ -1881,7 +1963,7 @@ function UnitsLibraryView({
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((unit) => (
+                {sorted.map((unit) => (
                   <tr key={unit.id} className="border-b align-top">
                     <td className="p-2 font-medium">{unit.title}</td>
                     <td className="p-2">
@@ -1912,10 +1994,16 @@ function UnitsLibraryView({
                       </div>
                     </td>
                     <td className="p-2 text-right">
-                      <Button variant="outline" size="sm" onClick={() => onEditUnit(unit)}>
-                        <FileText className="h-4 w-4" />
-                        Edit
-                      </Button>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button variant="outline" size="sm" onClick={() => setSelectedUnitForPlacement(unit)}>
+                          <Boxes className="h-4 w-4" />
+                          Add to curriculum
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => onEditUnit(unit)}>
+                          <FileText className="h-4 w-4" />
+                          Edit
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1924,6 +2012,81 @@ function UnitsLibraryView({
           </div>
         </CardContent>
       </Card>
+
+      <Dialog
+        open={Boolean(selectedUnitForPlacement)}
+        title="Add unit to curriculum"
+        description="Choose where this unit should appear in the curriculum map."
+        onOpenChange={(open) => {
+          if (!open) setSelectedUnitForPlacement(null);
+        }}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setSelectedUnitForPlacement(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => selectedUnitForPlacement && addToCurriculum(selectedUnitForPlacement)}
+              disabled={!placementClassId || !placementTermId}
+            >
+              Add to curriculum
+            </Button>
+          </div>
+        }
+      >
+        {selectedUnitForPlacement ? (
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm font-medium">Unit</p>
+              <p className="text-sm text-muted-foreground">{selectedUnitForPlacement.title}</p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Class</label>
+                <Select value={placementClassId} onChange={(event) => setPlacementClassId(event.target.value)}>
+                  {data.classes.map((classGroup) => (
+                    <option key={classGroup.id} value={classGroup.id}>
+                      {classGroup.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Half term</label>
+                <Select value={placementTermId} onChange={(event) => setPlacementTermId(event.target.value)}>
+                  {data.terms.map((term) => (
+                    <option key={term.id} value={term.id}>
+                      {term.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Placement mode</label>
+                <Select
+                  value={placementMode}
+                  onChange={(event) => setPlacementMode(event.target.value as PlannedUnitModeKey)}
+                >
+                  <option value="SHARED">Shared</option>
+                  <option value="SPLIT_INPUT">Split input</option>
+                  <option value="COHORT_SPECIFIC">Cohort specific</option>
+                  <option value="OVERLAY">Overlay</option>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Notes</label>
+                <Textarea
+                  value={placementNotes}
+                  onChange={(event) => setPlacementNotes(event.target.value)}
+                  placeholder="Optional placement notes"
+                />
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Dialog>
     </div>
   );
 }
