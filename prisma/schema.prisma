@@ -1,0 +1,344 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum SubjectPlanningModel {
+  FULL_CYCLE_AB
+  MODIFIED_CYCLE_AB
+  LEAD_YEAR
+  SHARED_THEME_SEPARATE_OUTCOMES
+  SAME_UNIT_DIFFERENT_DEPTH
+  PARALLEL_CURRICULUM
+  COHORT_ENTITLEMENT
+  HYBRID
+}
+
+enum PlannedUnitMode {
+  SHARED
+  SPLIT_INPUT
+  COHORT_SPECIFIC
+  OVERLAY
+}
+
+enum WarningSeverity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum WarningType {
+  EXACT_DUPLICATE
+  LIKELY_DUPLICATE
+  POSSIBLE_DUPLICATE
+  ACCEPTABLE_REPEAT
+  EARLY_ENCOUNTER
+  GAP
+  WEAK_ALIGNMENT
+  WORKLOAD_RISK
+}
+
+model School {
+  id            String         @id @default(cuid())
+  name          String
+  designNotes   String?
+  academicYears AcademicYear[]
+  userSettings  UserSettings?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model AcademicYear {
+  id              String           @id @default(cuid())
+  label           String
+  startsOn        DateTime?
+  endsOn          DateTime?
+  schoolId        String
+  school          School           @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  classGroups     ClassGroup[]
+  curriculumPlans CurriculumPlan[]
+  previousRecords PreviousCoverage[]
+  warnings        Warning[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([schoolId, label])
+}
+
+model ClassGroup {
+  id              String           @id @default(cuid())
+  name            String
+  teacherName     String?
+  notes           String?
+  isMixedAge      Boolean          @default(false)
+  isProtected     Boolean          @default(false)
+  academicYearId  String
+  academicYear    AcademicYear     @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  yearGroups      ClassYearGroup[]
+  plannedUnits    PlannedUnit[]
+  previousRecords PreviousCoverage[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+}
+
+model YearGroup {
+  id              String           @id @default(cuid())
+  name            String           @unique
+  shortName       String
+  phase           String
+  sortOrder       Int
+  classGroups     ClassYearGroup[]
+  units           Unit[]
+  outcomeLadders  OutcomeLadder[]
+  previousRecords PreviousCoverage[]
+}
+
+model ClassYearGroup {
+  id           String     @id @default(cuid())
+  classGroupId String
+  yearGroupId  String
+  notes        String?
+  classGroup   ClassGroup @relation(fields: [classGroupId], references: [id], onDelete: Cascade)
+  yearGroup    YearGroup  @relation(fields: [yearGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([classGroupId, yearGroupId])
+}
+
+model Subject {
+  id                String             @id @default(cuid())
+  name              String             @unique
+  slug              String             @unique
+  color             String
+  defaultUnitType   String?
+  subjectModel      SubjectModel?
+  units             Unit[]
+  plannedUnits      PlannedUnit[]
+  previousRecords   PreviousCoverage[]
+  warnings          Warning[]
+  assessmentTargets AssessmentEndpoint[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+model SubjectModel {
+  id           String               @id @default(cuid())
+  subjectId    String               @unique
+  model        SubjectPlanningModel
+  rationale    String?
+  configuration Json?
+  subject      Subject              @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+}
+
+model Unit {
+  id                      String               @id @default(cuid())
+  title                   String
+  subjectId               String
+  yearGroupId             String?
+  keyStageOrPhase         String?
+  term                    String?
+  halfTerm                String?
+  cycle                   String?
+  sourceDocumentName      String?
+  sourcePageNumber        Int?
+  unitType                String
+  vocabulary              Json?
+  notes                   String?
+  estimatedLessons        Int?
+  estimatedHours          Float?
+  assessmentEndpointText  String?
+  statutoryObjectiveLinks Json?
+  repetitionAllowed       Boolean              @default(false)
+  repeatType              String?
+  importDocumentId        String?
+  subject                 Subject              @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  yearGroup               YearGroup?           @relation(fields: [yearGroupId], references: [id])
+  tags                    UnitTag[]
+  outcomeLadders          OutcomeLadder[]
+  assessmentEndpoints     AssessmentEndpoint[]
+  plannedUnits            PlannedUnit[]
+  importDocument          ImportDocument?      @relation(fields: [importDocumentId], references: [id])
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+}
+
+model UnitTag {
+  id        String   @id @default(cuid())
+  unitId    String
+  kind      String
+  value     String
+  unit      Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([kind, value])
+}
+
+model CurriculumPlan {
+  id             String        @id @default(cuid())
+  name           String
+  academicYearId String
+  cycleId        String?
+  notes          String?
+  academicYear   AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  cycle          Cycle?        @relation(fields: [cycleId], references: [id])
+  plannedUnits   PlannedUnit[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model Cycle {
+  id              String           @id @default(cuid())
+  name            String           @unique
+  description     String?
+  sortOrder       Int
+  curriculumPlans CurriculumPlan[]
+  plannedUnits    PlannedUnit[]
+}
+
+model TermSlot {
+  id           String        @id @default(cuid())
+  name         String
+  shortName    String
+  sortOrder    Int
+  plannedUnits PlannedUnit[]
+
+  @@unique([name])
+}
+
+model PlannedUnit {
+  id                   String          @id @default(cuid())
+  curriculumPlanId     String
+  unitId               String
+  classGroupId         String
+  subjectId            String
+  termSlotId           String
+  cycleId              String?
+  mode                 PlannedUnitMode @default(SHARED)
+  assignedYearGroupIds Json?
+  position             Int             @default(0)
+  notes                String?
+  curriculumPlan       CurriculumPlan  @relation(fields: [curriculumPlanId], references: [id], onDelete: Cascade)
+  unit                 Unit            @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  classGroup           ClassGroup      @relation(fields: [classGroupId], references: [id], onDelete: Cascade)
+  subject              Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  termSlot             TermSlot        @relation(fields: [termSlotId], references: [id], onDelete: Cascade)
+  cycle                Cycle?          @relation(fields: [cycleId], references: [id])
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+}
+
+model CoverageStatus {
+  id              String             @id @default(cuid())
+  key             String             @unique
+  label           String
+  description     String?
+  previousRecords PreviousCoverage[]
+}
+
+model PreviousCoverage {
+  id                   String         @id @default(cuid())
+  academicYearId        String
+  cohortYearGroupId     String
+  classGroupId          String?
+  subjectId             String
+  unitTitle             String
+  contentTags           Json?
+  coverageStatusId      String
+  assessmentConfidence  String        @default("unknown")
+  notes                 String?
+  academicYear          AcademicYear  @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  cohortYearGroup       YearGroup     @relation(fields: [cohortYearGroupId], references: [id])
+  classGroup            ClassGroup?   @relation(fields: [classGroupId], references: [id])
+  subject               Subject       @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  coverageStatus        CoverageStatus @relation(fields: [coverageStatusId], references: [id])
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+}
+
+model Warning {
+  id             String          @id @default(cuid())
+  academicYearId String
+  severity       WarningSeverity
+  type           WarningType
+  affectedCohort String?
+  subjectId      String?
+  unitId         String?
+  reason         String
+  suggestedAction String
+  dismissedAt    DateTime?
+  overrideNote   String?
+  academicYear   AcademicYear    @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  subject         Subject?        @relation(fields: [subjectId], references: [id])
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model OutcomeLadder {
+  id          String     @id @default(cuid())
+  unitId      String
+  yearGroupId String
+  title       String
+  outcomes    Json
+  grammar     Json?
+  successCriteria Json?
+  unit        Unit       @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  yearGroup   YearGroup  @relation(fields: [yearGroupId], references: [id])
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model AssessmentEndpoint {
+  id          String    @id @default(cuid())
+  unitId      String?
+  subjectId   String?
+  title       String
+  criteria    Json?
+  notes       String?
+  unit        Unit?     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  subject     Subject?  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model ImportDocument {
+  id             String        @id @default(cuid())
+  fileName       String
+  fileType       String
+  sourceName     String?
+  rawText        String?
+  status         String        @default("draft")
+  confidence     Float?
+  importDrafts   ImportDraft[]
+  units          Unit[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model ImportDraft {
+  id               String         @id @default(cuid())
+  importDocumentId String
+  parsedUnitJson    Json
+  status            String         @default("needs_review")
+  notes             String?
+  importDocument    ImportDocument @relation(fields: [importDocumentId], references: [id], onDelete: Cascade)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+}
+
+model UserSettings {
+  id                    String   @id @default(cuid())
+  schoolId              String   @unique
+  autosaveEnabled       Boolean  @default(true)
+  defaultAcademicYearId String?
+  importConfidenceFloor Float    @default(0.45)
+  theme                 String   @default("system")
+  school                School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
